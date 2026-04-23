@@ -5,7 +5,7 @@ import os
 
 app = FastAPI()
 
-r = redis.Redis(host="localhost", port=6379)
+r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
 @app.post("/jobs")
 def create_job():
@@ -20,3 +20,8 @@ def get_job(job_id: str):
     if not status:
         return {"error": "not found"}
     return {"job_id": job_id, "status": status.decode()}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
