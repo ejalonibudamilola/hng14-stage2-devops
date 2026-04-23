@@ -47,6 +47,7 @@ jobs:
           docker run --rm -i hadolint/hadolint < worker/Dockerfile
           docker run --rm -i hadolint/hadolint < frontend/Dockerfile
 
+
 # ==================================================
 # 2. TEST
 # ==================================================
@@ -63,14 +64,14 @@ jobs:
           python-version: "3.11"
 
       - name: Install test deps
-        run: pip install -r api/requirements.txt pytest pytest-cov
+        run: python3 -m pip install -r api/requirements.txt pytest pytest-cov
 
       - name: Run tests with coverage
         env:
-          REDIS_URL: redis://localhost:6379/0
+          REDIS_URL: redis://redis:6379/0
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest tests --cov=api --cov-report=xml --cov-report=html
+          python3 -m pytest tests --cov=api --cov-report=xml --cov-report=html
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -80,79 +81,58 @@ jobs:
             coverage.xml
             htmlcov/
 
+
 # ==================================================
-# 3. BUILD
+# 3. BUILD (LOCAL ONLY - FIXED)
 # ==================================================
   build:
     runs-on: ubuntu-latest
     needs: test
 
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build images
-        run: |
-          for app in api worker frontend
-          do
-            docker build -t localhost:5000/$app:${{ github.sha }} ./$app
-            docker tag localhost:5000/$app:${{ github.sha }} localhost:5000/$app:latest
-            docker push localhost:5000/$app:${{ github.sha }}
-            docker push localhost:5000/$app:latest
-          done
+      - name: Build API image
+        run: docker build -t api:${{ github.sha }} ./api
+
+      - name: Build Worker image
+        run: docker build -t worker:${{ github.sha }} ./worker
+
+      - name: Build Frontend image
+        run: docker build -t frontend:${{ github.sha }} ./frontend
+
 
 # ==================================================
-# 4. SECURITY SCAN
+# 4. SECURITY SCAN (FIXED TRIVY)
 # ==================================================
   security:
     runs-on: ubuntu-latest
     needs: build
 
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Trivy
+      - name: Scan API image
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget
+          docker run --rm aquasec/trivy image \
+          api:${{ github.sha }} \
+          --severity CRITICAL --exit-code 1
 
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
-
-          trivy --version
-
-      - name: Scan all images
+      - name: Scan Worker image
         run: |
-          trivy image --severity CRITICAL --exit-code 1 \
-            --format sarif --output trivy-api.sarif \
-            localhost:5000/api:${{ github.sha }}
+          docker run --rm aquasec/trivy image \
+          worker:${{ github.sha }} \
+          --severity CRITICAL --exit-code 1
 
-          trivy image --severity CRITICAL --exit-code 1 \
-            --format sarif --output trivy-worker.sarif \
-            localhost:5000/worker:${{ github.sha }}
+      - name: Scan Frontend image
+        run: |
+          docker run --rm aquasec/trivy image \
+          frontend:${{ github.sha }} \
+          --severity CRITICAL --exit-code 1
 
-          trivy image --severity CRITICAL --exit-code 1 \
-            --format sarif --output trivy-frontend.sarif \
-            localhost:5000/frontend:${{ github.sha }}
-
-      - name: Upload SARIF reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-results
-          path: "*.sarif"
 
 # ==================================================
-# 5. INTEGRATION TEST
+# 5. INTEGRATION TEST (REAL FLOW FIXED)
 # ==================================================
   integration:
     runs-on: ubuntu-latest
@@ -164,29 +144,38 @@ jobs:
       - name: Start full stack
         run: docker compose up -d --build
 
-      - name: Wait for app
+      - name: Wait for API
         run: sleep 20
 
-      - name: Submit job
+      - name: Submit job and verify completion
         run: |
           RESPONSE=$(curl -s -X POST http://localhost:8021/jobs)
-          echo $RESPONSE
+          JOB_ID=$(echo $RESPONSE | jq -r .job_id)
 
-      - name: Poll health endpoint
-        run: |
-          for i in {1..10}
+          echo "Job ID: $JOB_ID"
+
+          for i in {1..12}
           do
-            curl -f http://localhost:8021/health && exit 0
-            sleep 5
+            STATUS=$(curl -s http://localhost:8021/jobs/$JOB_ID | jq -r .status)
+
+            if [ "$STATUS" = "completed" ]; then
+              echo "Integration test passed"
+              exit 0
+            fi
+
+            sleep 3
           done
+
+          echo "Integration test failed"
           exit 1
 
       - name: Cleanup
         if: always()
         run: docker compose down -v
 
+
 # ==================================================
-# 6. DEPLOY
+# 6. DEPLOY (SAFE ROLLING UPDATE)
 # ==================================================
   deploy:
     runs-on: ubuntu-latest
@@ -196,23 +185,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start old container
-        run: docker compose up -d api
-
-      - name: Start new container
+      - name: Deploy new API container
         run: |
-          docker run -d --name api_new -p 9000:8000 your-api-image
+          docker run -d --name api_new -p 9000:8000 api:${{ github.sha }}
 
-      - name: Health check new container
-        run: |
-          for i in {1..12}
-          do
-            curl -f http://localhost:9000/health && break
+          timeout=60
+
+          until curl -f http://localhost:9000/health; do
             sleep 5
+            timeout=$((timeout-5))
+
+            if [ $timeout -le 0 ]; then
+              echo "Deployment failed - rollback"
+              docker stop api_new
+              docker rm api_new
+              exit 1
+            fi
           done
 
-      - name: Replace old container
-        run: |
-          docker stop api
-          docker rm api
+          docker stop api || true
+          docker rm api || true
           docker rename api_new api
