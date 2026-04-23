@@ -21,10 +21,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install flake8
-      run: python3 -m pip install flake8
+        run: python3 -m pip install flake8
 
       - name: Run flake8
-      run: python3 -m flake8 api worker tests
+        run: python3 -m flake8 api worker tests
 
       - name: Setup Node
         uses: actions/setup-node@v4
