@@ -1,0 +1,46 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ---------- PYTHON LINT ----------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.8
+
+      - name: Install Python lint tools
+        run: pip install flake8
+
+      - name: Run Python lint
+        run: flake8 backend
+
+      # ---------- JS LINT ----------
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install JS dependencies
+        run: |
+          cd frontend
+          npm install
+
+      - name: Run ESLint
+        run: npx eslint frontend
+
+      # ---------- DOCKER LINT ----------
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
