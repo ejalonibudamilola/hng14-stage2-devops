@@ -4,29 +4,28 @@ on:
   push:
     branches: [main, develop]
 
+jobs:
+
 # ==================================================
 # 1. LINT
 # ==================================================
-jobs:
   lint:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      # Python lint
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install flake8
-        run: pip install flake8
+        run: python3 -m pip install flake8
 
       - name: Run flake8
-        run: flake8 api worker tests
+        run: python3 -m flake8 api worker tests
 
-      # Node lint
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -42,13 +41,11 @@ jobs:
           cd frontend
           npx eslint .
 
-      # Docker lint
       - name: Run hadolint
         run: |
           docker run --rm -i hadolint/hadolint < api/Dockerfile
           docker run --rm -i hadolint/hadolint < worker/Dockerfile
           docker run --rm -i hadolint/hadolint < frontend/Dockerfile
-
 
 # ==================================================
 # 2. TEST
@@ -66,19 +63,27 @@ jobs:
           python-version: "3.11"
 
       - name: Install test deps
-        run: pip install -r api/requirements.txt pytest pytest-cov httpx
+        run: pip install -r api/requirements.txt pytest pytest-cov
 
       - name: Run tests with coverage
         env:
           REDIS_URL: redis://localhost:6379/0
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest tests --cov=api --cov-report=xml --cov-report=html
+        run: |
+          pytest tests --cov=api --cov-report=xml --cov-report=html
 
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
 
 # ==================================================
-# 3 + 4. BUILD + SECURITY (FIXED TOGETHER)
+# 3. BUILD
 # ==================================================
-  build_and_scan:
+  build:
     runs-on: ubuntu-latest
     needs: test
 
@@ -91,53 +96,86 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Install Trivy
+      - name: Build images
+        run: |
+          for app in api worker frontend
+          do
+            docker build -t localhost:5000/$app:${{ github.sha }} ./$app
+            docker tag localhost:5000/$app:${{ github.sha }} localhost:5000/$app:latest
+            docker push localhost:5000/$app:${{ github.sha }}
+            docker push localhost:5000/$app:latest
+          done
+
+# ==================================================
+# 4. SECURITY SCAN
+# ==================================================
+  security:
+    runs-on: ubuntu-latest
+    needs: build
+
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Install Trivy
         run: |
+          sudo apt-get update
+          sudo apt-get install -y wget
+
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 
-      # Build images
-      - name: Build and push images
+          trivy --version
+
+      - name: Scan all images
         run: |
-          docker build -t localhost:5000/api:${{ github.sha }} ./api
-          docker build -t localhost:5000/worker:${{ github.sha }} ./worker
-          docker build -t localhost:5000/frontend:${{ github.sha }} ./frontend
+          trivy image --severity CRITICAL --exit-code 1 \
+            --format sarif --output trivy-api.sarif \
+            localhost:5000/api:${{ github.sha }}
 
-          docker push localhost:5000/api:${{ github.sha }}
-          docker push localhost:5000/worker:${{ github.sha }}
-          docker push localhost:5000/frontend:${{ github.sha }}
+          trivy image --severity CRITICAL --exit-code 1 \
+            --format sarif --output trivy-worker.sarif \
+            localhost:5000/worker:${{ github.sha }}
 
-      # Scan images
-      - name: Trivy scan
-        run: |
-          trivy image --severity CRITICAL --exit-code 1 localhost:5000/api:${{ github.sha }}
-          trivy image --severity CRITICAL --exit-code 1 localhost:5000/worker:${{ github.sha }}
-          trivy image --severity CRITICAL --exit-code 1 localhost:5000/frontend:${{ github.sha }}
+          trivy image --severity CRITICAL --exit-code 1 \
+            --format sarif --output trivy-frontend.sarif \
+            localhost:5000/frontend:${{ github.sha }}
 
+      - name: Upload SARIF reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: "*.sarif"
 
 # ==================================================
 # 5. INTEGRATION TEST
 # ==================================================
   integration:
     runs-on: ubuntu-latest
-    needs: build_and_scan
+    needs: security
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start stack
+      - name: Start full stack
         run: docker compose up -d --build
 
-      - name: Wait for startup
+      - name: Wait for app
         run: sleep 20
 
       - name: Submit job
         run: |
-          curl -s -X POST http://localhost:8021/jobs
+          RESPONSE=$(curl -s -X POST http://localhost:8021/jobs)
+          echo $RESPONSE
 
-      - name: Check health
+      - name: Poll health endpoint
         run: |
-          for i in {1..10}; do
+          for i in {1..10}
+          do
             curl -f http://localhost:8021/health && exit 0
             sleep 5
           done
@@ -146,7 +184,6 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker compose down -v
-
 
 # ==================================================
 # 6. DEPLOY
@@ -159,17 +196,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rolling deploy
-        run: |
-          docker compose up -d api
-          
-          docker run -d --name api_new -p 9000:8000 localhost:5000/api:${{ github.sha }}
+      - name: Start old container
+        run: docker compose up -d api
 
-          for i in {1..12}; do
+      - name: Start new container
+        run: |
+          docker run -d --name api_new -p 9000:8000 your-api-image
+
+      - name: Health check new container
+        run: |
+          for i in {1..12}
+          do
             curl -f http://localhost:9000/health && break
             sleep 5
           done
 
-          docker stop api || true
-          docker rm api || true
+      - name: Replace old container
+        run: |
+          docker stop api
+          docker rm api
           docker rename api_new api
