@@ -121,7 +121,7 @@ jobs:
 # ==================================================
   integration:
     runs-on: ubuntu-latest
-    needs: build
+    needs: build_and_security_scan
 
     steps:
       - uses: actions/checkout@v4
