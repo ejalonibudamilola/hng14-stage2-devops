@@ -156,17 +156,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rolling deploy
+      - name: Build API image
+        run: docker build -t api:${{ github.sha }} ./api
+
+      - name: Start old container (if exists)
+        run: docker compose up -d api || true
+
+      - name: Start new container
         run: |
-          docker compose up -d api
+          docker run -d --name api_new -p 9000:8000 \
+            -e REDIS_URL=redis://host.docker.internal:6379/0 \
+            api:${{ github.sha }}
 
-          docker run -d --name api_new -p 9000:8000 localhost:5000/api:${{ github.sha }}
-
+      - name: Health check new container
+        run: |
           for i in {1..12}; do
-            curl -f http://localhost:9000/health && break
+            curl -f http://localhost:9000/health && exit 0
             sleep 5
           done
+          exit 1
 
+      - name: Replace old container
+        run: |
           docker stop api || true
           docker rm api || true
           docker rename api_new api
