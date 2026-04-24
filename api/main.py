@@ -5,7 +5,7 @@ import os
 
 app = FastAPI()
 
-r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"),decode_responses=True)
+r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
 
 
 @app.post("/jobs")
