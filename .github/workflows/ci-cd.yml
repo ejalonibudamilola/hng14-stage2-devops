@@ -119,44 +119,44 @@ jobs:
 # ==================================================
 # 4. INTEGRATION TEST
 # ==================================================
-integration:
-  runs-on: ubuntu-latest
-  needs: build
+  integration:
+    runs-on: ubuntu-latest
+    needs: build
 
-  steps:
-    - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Start stack
-      run: docker compose up -d --build
+      - name: Start stack
+        run: docker compose up -d --build
 
-    - name: Wait for Redis
-      run: |
-        for i in {1..20}; do
-          docker exec $(docker ps -q --filter name=redis) redis-cli ping && break
-          sleep 2
-        done
+      - name: Wait for Redis
+        run: |
+          for i in {1..20}; do
+            docker exec $(docker ps -q --filter name=redis) redis-cli ping && break
+            sleep 2
+          done
 
-    - name: Wait for API health
-      run: |
-        for i in {1..30}; do
-          curl -sf http://localhost:8021/health && exit 0
-          sleep 2
-        done
-        echo "API failed to start"
-        docker compose logs
-        exit 1
+      - name: Wait for API health
+        run: |
+          for i in {1..30}; do
+            curl -sf http://localhost:8021/health && exit 0
+            sleep 2
+          done
+          echo "API failed to start"
+          docker compose logs
+          exit 1
 
-    - name: Submit job
-      run: |
-        curl -s -X POST http://localhost:8021/jobs
+      - name: Submit job
+        run: |
+          curl -s -X POST http://localhost:8021/jobs
 
-    - name: Verify job endpoint works
-      run: |
-        curl -sf http://localhost:8021/health
+      - name: Verify job endpoint works
+        run: |
+          curl -sf http://localhost:8021/health
 
-    - name: Cleanup
-      if: always()
-      run: docker compose down -v
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
 
 
 # ==================================================
