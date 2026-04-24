@@ -80,41 +80,27 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
 
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
+  steps:
+    - uses: actions/checkout@v4
 
-    steps:
-      - uses: actions/checkout@v4
+    - name: Install Trivy
+      run: |
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 
-      # Install Trivy
-      - name: Install Trivy
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+    - name: Build Docker images
+      run: |
+        docker build -t api:${{ github.sha }} ./api
+        docker build -t worker:${{ github.sha }} ./worker
+        docker build -t frontend:${{ github.sha }} ./frontend
 
-      # Build images
-      - name: Build Docker images
-        run: |
-          docker build -t localhost:5000/api:${{ github.sha }} ./api
-          docker build -t localhost:5000/worker:${{ github.sha }} ./worker
-          docker build -t localhost:5000/frontend:${{ github.sha }} ./frontend
+    - name: Trivy scan (API)
+      run: trivy image --severity CRITICAL --exit-code 1 api:${{ github.sha }}
 
-      # Push images
-      - name: Push images
-        run: |
-          docker push localhost:5000/api:${{ github.sha }}
-          docker push localhost:5000/worker:${{ github.sha }}
-          docker push localhost:5000/frontend:${{ github.sha }}
+    - name: Trivy scan (Worker)
+      run: trivy image --severity CRITICAL --exit-code 1 worker:${{ github.sha }}
 
-      # SECURITY SCAN (NOW SAME JOB = FIXED)
-      - name: Trivy scan
-        run: |
-          trivy image --severity CRITICAL --exit-code 1 localhost:5000/api:${{ github.sha }}
-          trivy image --severity CRITICAL --exit-code 1 localhost:5000/worker:${{ github.sha }}
-          trivy image --severity CRITICAL --exit-code 1 localhost:5000/frontend:${{ github.sha }}
-
+    - name: Trivy scan (Frontend)
+      run: trivy image --severity CRITICAL --exit-code 1 frontend:${{ github.sha }}
 
 # ==================================================
 # 4. INTEGRATION TEST
