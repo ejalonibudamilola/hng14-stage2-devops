@@ -29,6 +29,11 @@ services:
     ports:
       - "8021:8000"
     restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     deploy:
       resources:
         limits:
