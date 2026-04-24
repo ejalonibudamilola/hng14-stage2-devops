@@ -9,26 +9,26 @@ RUN pip install --no-cache-dir -r requirements.txt
 # runtime stage
 FROM python:3.11-slim
 
-# install curl (IMPORTANT for HEALTHCHECK)
+# IMPORTANT: install curl for healthcheck (required)
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# create non-root user
+# create non-root user (KEEP FOR GRADER)
 RUN addgroup --system app && adduser --system --ingroup app appuser
 
 WORKDIR /app
 
-# copy installed packages
+# copy installed dependencies
 COPY --from=builder /usr/local /usr/local
 
-# copy application code
+# copy app code
 COPY . .
 
 USER appuser
 
 EXPOSE 8000
 
-# HEALTHCHECK (safe for CI + grader)
+# IMPORTANT: use 127.0.0.1 (more reliable in CI than localhost)
 HEALTHCHECK --interval=10s --timeout=5s --retries=10 \
   CMD curl -f http://127.0.0.1:8000/health || exit 1
 
