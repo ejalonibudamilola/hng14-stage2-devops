@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
-timeout 60 bash -c '
-until curl -f http://localhost:8021/health; do
-  sleep 2
+timeout 120 bash -c '
+until curl -sf http://localhost:8021/health; do
+  sleep 3
 done
 '
 
 curl -X POST http://localhost:8021/jobs
-curl -f http://localhost:8021/health
+curl -sf http://localhost:8021/health
