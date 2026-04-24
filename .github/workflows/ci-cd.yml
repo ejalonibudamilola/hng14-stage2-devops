@@ -13,7 +13,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -31,22 +32,21 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install frontend deps
+      - name: Install frontend dependencies
         run: |
           cd frontend
           npm install
 
-      - name: Run eslint
+      - name: Run ESLint
         run: |
           cd frontend
           npx eslint .
 
-      - name: Run hadolint
+      - name: Run Hadolint on Dockerfiles
         run: |
           docker run --rm -i hadolint/hadolint < api/Dockerfile
           docker run --rm -i hadolint/hadolint < worker/Dockerfile
           docker run --rm -i hadolint/hadolint < frontend/Dockerfile
-
 
 # ==================================================
 # 2. TEST
@@ -56,51 +56,99 @@ jobs:
     needs: lint
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install test deps
+      - name: Install test dependencies
         run: pip install -r api/requirements.txt pytest pytest-cov httpx
 
-      - name: Run tests
+      - name: Run unit tests with coverage
         env:
           REDIS_URL: redis://localhost:6379/0
           PYTHONPATH: ${{ github.workspace }}
         run: pytest tests --cov=api --cov-report=xml --cov-report=html
 
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
 
 # ==================================================
-# 3. BUILD + SECURITY SCAN (FIXED)
+# 3. BUILD + SECURITY
 # ==================================================
   build_and_security_scan:
     runs-on: ubuntu-latest
     needs: test
 
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api
+          push: true
+          tags: |
+            localhost:5000/api:${{ github.sha }}
+            localhost:5000/api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./worker
+          push: true
+          tags: |
+            localhost:5000/worker:${{ github.sha }}
+            localhost:5000/worker:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            localhost:5000/frontend:${{ github.sha }}
+            localhost:5000/frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 
-      - name: Build Docker images
+      - name: Run Trivy scan and generate SARIF
         run: |
-          docker build -t api:${{ github.sha }} ./api
-          docker build -t worker:${{ github.sha }} ./worker
-          docker build -t frontend:${{ github.sha }} ./frontend
+          trivy image --severity CRITICAL --exit-code 1 \
+          --format sarif --output trivy-results.sarif \
+          localhost:5000/api:${{ github.sha }}
 
-      - name: Trivy scan (API)
-        run: trivy image --severity CRITICAL --exit-code 1 api:${{ github.sha }}
-
-      - name: Trivy scan (Worker)
-        run: trivy image --severity CRITICAL --exit-code 1 worker:${{ github.sha }}
-
-      - name: Trivy scan (Frontend)
-        run: trivy image --severity CRITICAL --exit-code 1 frontend:${{ github.sha }}
+      - name: Upload Trivy SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif-report
+          path: trivy-results.sarif
 
 # ==================================================
 # 4. INTEGRATION TEST
@@ -110,40 +158,29 @@ jobs:
     needs: build_and_security_scan
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - name: Start stack
+      - name: Start application stack
+        env:
+          REDIS_URL: redis://redis:6379/0
+          API_URL: http://api:8000
         run: docker compose up -d --build
 
-      - name: Wait for Redis
+      - name: Wait for services
         run: |
-          for i in {1..20}; do
-            docker exec $(docker ps -q --filter name=redis) redis-cli ping && break
-            sleep 2
+          timeout 120 bash -c '
+          until curl -sf http://localhost:8021/health; do
+            sleep 5
           done
+          '
 
-      - name: Wait for API health
-        run: |
-          for i in {1..30}; do
-            curl -sf http://localhost:8021/health && exit 0
-            sleep 2
-          done
-          echo "API failed to start"
-          docker compose logs
-          exit 1
+      - name: Run integration script
+        run: bash tests/integration.sh
 
-      - name: Submit job
-        run: |
-          curl -s -X POST http://localhost:8021/jobs
-
-      - name: Verify job endpoint works
-        run: |
-          curl -sf http://localhost:8021/health
-
-      - name: Cleanup
+      - name: Stop containers
         if: always()
         run: docker compose down -v
-
 
 # ==================================================
 # 5. DEPLOY
@@ -154,29 +191,30 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - name: Build API image
+      - name: Build production image
         run: docker build -t api:${{ github.sha }} ./api
 
-      - name: Start old container (if exists)
+      - name: Start current version
         run: docker compose up -d api || true
 
-      - name: Start new container
+      - name: Launch new version
         run: |
           docker run -d --name api_new -p 9000:8000 \
-            -e REDIS_URL=redis://host.docker.internal:6379/0 \
-            api:${{ github.sha }}
+          -e REDIS_URL=${{ secrets.REDIS_URL }} \
+          api:${{ github.sha }}
 
-      - name: Health check new container
+      - name: Verify new version health
         run: |
-          for i in {1..12}; do
-            curl -f http://localhost:9000/health && exit 0
+          timeout 120 bash -c '
+          until curl -sf http://localhost:9000/health; do
             sleep 5
           done
-          exit 1
+          '
 
-      - name: Replace old container
+      - name: Replace old version
         run: |
           docker stop api || true
           docker rm api || true

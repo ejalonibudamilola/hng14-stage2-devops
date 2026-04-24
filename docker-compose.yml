@@ -1,4 +1,4 @@
-version: "3.9"
+name: hng14-stage2-devops
 
 services:
   redis:
@@ -10,6 +10,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: always
     deploy:
       resources:
         limits:
@@ -19,13 +20,15 @@ services:
   api:
     build: ./api
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      REDIS_URL: ${REDIS_URL}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     networks:
       - app-net
     ports:
       - "8021:8000"
+    restart: always
     deploy:
       resources:
         limits:
@@ -35,11 +38,13 @@ services:
   worker:
     build: ./worker
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      REDIS_URL: ${REDIS_URL}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     networks:
       - app-net
+    restart: always
     deploy:
       resources:
         limits:
@@ -49,13 +54,15 @@ services:
   frontend:
     build: ./frontend
     environment:
-      - API_URL=http://api:8000
+      API_URL: ${API_URL}
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks:
       - app-net
     ports:
       - "3000:3000"
+    restart: always
     deploy:
       resources:
         limits:
@@ -64,3 +71,4 @@ services:
 
 networks:
   app-net:
+    name: app-net
