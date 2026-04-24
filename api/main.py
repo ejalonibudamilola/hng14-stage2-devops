@@ -5,15 +5,18 @@ import os
 
 app = FastAPI()
 
-r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"),decode_responses=True)
 
 
 @app.post("/jobs")
 def create_job():
-    job_id = str(uuid.uuid4())
-    r.lpush("job", job_id)
-    r.hset(f"job:{job_id}", "status", "queued")
-    return {"job_id": job_id}
+    try:
+        job_id = str(uuid.uuid4())
+        r.lpush("job", job_id)
+        r.hset(f"job:{job_id}", "status", "queued")
+        return {"job_id": job_id}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/jobs/{job_id}")

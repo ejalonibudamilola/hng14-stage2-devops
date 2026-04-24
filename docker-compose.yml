@@ -21,8 +21,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
-      redis:
-        condition: service_healthy
+      - redis:
     networks:
       - app-net
     ports:
@@ -38,8 +37,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
-      redis:
-        condition: service_healthy
+      - redis:
     networks:
       - app-net
     deploy:
@@ -53,8 +51,7 @@ services:
     environment:
       - API_URL=http://api:8000
     depends_on:
-      api:
-        condition: service_healthy
+      - api:
     networks:
       - app-net
     ports:
